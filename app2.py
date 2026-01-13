@@ -35,27 +35,27 @@ def extract_codes_from_text(raw_text: str) -> List[str]:
     """
     if not raw_text:
         return []
-    
+
     text = str(raw_text)
-    
+
     # 1. Hard Separators -> Pipe |
     text = re.sub(r'[;,\/\\\n\r]', '|', text)
-    
+
     # 2. Remove dots
     text = text.replace('.', '')
-    
+
     # 3. Split by Hard Separators
     raw_blocks = text.split('|')
-    
+
     final_codes = []
-    
+
     for block in raw_blocks:
         parts = block.split()
         if not parts:
             continue
-        
+
         current_code = parts[0]
-        
+
         for next_part in parts[1:]:
             # HEURISTIC: Jei sujungus ilgis <= 10, klijuojame (pvz. 84 + 71)
             if len(current_code) + len(next_part) <= 10:
@@ -64,16 +64,16 @@ def extract_codes_from_text(raw_text: str) -> List[str]:
                 if len(current_code) >= 4:
                     final_codes.append(current_code)
                 current_code = next_part
-        
+
         if len(current_code) >= 4:
             final_codes.append(current_code)
-    
+
     return sorted(list(set([c for c in final_codes if c.isdigit() and 4 <= len(c) <= 10])))
 
 def categorize_file(filename: str) -> str:
     """Nustato sankcijos tipą pagal failo pavadinimą."""
     filename_lower = filename.lower()
-    
+
     if "(tru)" in filename_lower: return "RU transit sanctions"
     elif "(lv_ru)" in filename_lower: return "EU sanctions for BY"
     elif "(du)" in filename_lower: return "Dvejopo naudojimo prekės (Dual Use)"
@@ -87,30 +87,16 @@ def categorize_file(filename: str) -> str:
 def is_valid_code_cell(text: str) -> bool:
     """
     GRIEŽTAS TRIUKŠMO FILTRAS.
-    Užtikrina, kad langelyje yra TIK kodas, o ne aprašymas su kodu.
     """
     if not text: return False
-    
-    # 1. Ilgio patikra: Kodas (net su tarpais) retai būna ilgesnis nei 25 simboliai.
-    # Jei tekstas ilgesnis, tai beveik garantuotai aprašymas.
-    if len(text) > 25: 
-        return False
-        
+    # 1. Ilgio patikra
+    if len(text) > 25: return False
     # 2. Valymas analizei
-    # Pašaliname 'ex' (dažnas prierašas), tarpus, taškus, naujas eilutes
     clean = re.sub(r'(?i)\bex\b', '', text)
     clean = re.sub(r'[ \.\,\n\r\t\u00A0]', '', clean)
-    
     # 3. Griežtas skaitmenų testas
-    # Jei liko bent viena raidė ar kitas simbolis - tai NE kodas.
-    # Pvz.: "Parts 8535" -> po valymo liks "Parts8535" -> isdigit() bus False.
-    if not clean.isdigit():
-        return False
-        
-    # 4. Jei po valymo nieko neliko (buvo tik tarpai ar 'ex'), irgi atmetam
-    if not clean:
-        return False
-        
+    if not clean.isdigit(): return False
+    if not clean: return False
     return True
 
 # --- SMART TABLE PARSER ---
@@ -142,7 +128,7 @@ def identify_table_columns_universal(rows: List[Any], is_docx: bool = False) -> 
                 code_idx = c_idx
             if "aprašymas" in txt or "description" in txt or "prekės" in txt:
                 desc_idx = c_idx
-        
+
         if code_idx != -1:
             start_row = r_idx + 1
             if desc_idx == -1 and row_len > code_idx + 1:
@@ -154,24 +140,23 @@ def identify_table_columns_universal(rows: List[Any], is_docx: bool = False) -> 
     best_code_col = 0
     max_cols_check = 0
     if rows: max_cols_check = get_row_len(rows[0])
-    
+
     for c in range(min(5, max_cols_check)):
         score = 0
         for row in rows[:15]:
             if get_row_len(row) > c:
                 txt = get_cell_text(row, c)
-                # Naudojame tą patį griežtą filtrą taškų skaičiavimui
                 if is_valid_code_cell(txt):
                     score += 10
-                elif len(txt) > 30: # Jei ilgas tekstas - didelė bauda
+                elif len(txt) > 30:
                     score -= 50
-                elif re.match(r'^\d{1,2}\.?$', txt.strip()): # Numeracija
+                elif re.match(r'^\d{1,2}\.?$', txt.strip()):
                     score -= 5
-        
+
         if score > best_code_score:
             best_code_score = score
             best_code_col = c
-            
+
     if desc_idx == -1: desc_idx = best_code_col + 1
     return best_code_col, desc_idx, 0
 
@@ -184,25 +169,23 @@ def load_docx_data() -> Tuple[List[Dict], int]:
         return [], 0
     all_codes = []
     docx_files = list(data_folder.glob("*.docx"))
-    
+
     for docx_file in docx_files:
         try:
             if "(master)" in docx_file.name.lower(): continue
             category = categorize_file(docx_file.name)
             source = docx_file.name
             doc = Document(docx_file)
-            
+
             for table in doc.tables:
                 code_col_idx, desc_col_idx, start_row = identify_table_columns_universal(table.rows, is_docx=True)
-                
+
                 for row in table.rows[start_row:]:
                     if len(row.cells) <= code_col_idx: continue
-                    
+
                     raw_text = row.cells[code_col_idx].text.strip()
-                    
-                    # GRIEŽTAS FILTRAS
                     if not is_valid_code_cell(raw_text): continue
-                    
+
                     found_codes = extract_codes_from_text(raw_text)
                     for valid_code in found_codes:
                         extra_info = ""
@@ -220,12 +203,17 @@ def load_excel_csv_data(data_folder_str: str) -> List[Dict]:
     all_codes = []
     data_folder = Path(data_folder_str)
     all_files = list(data_folder.glob("*.xlsx")) + list(data_folder.glob("*.csv"))
-    
+
     for file_path in all_files:
         try:
             if "(master)" in file_path.name.lower(): continue
+
             is_du_file = "(du)" in file_path.name.lower()
             is_sa_file = "(sa)" in file_path.name.lower()
+
+            # PATAISYMAS ČIA: Nustatome kategoriją pagal failo pavadinimą
+            file_category = categorize_file(file_path.name)
+
             df = None
             try:
                 if is_sa_file:
@@ -239,9 +227,9 @@ def load_excel_csv_data(data_folder_str: str) -> List[Dict]:
                     else:
                         df = pd.read_csv(file_path, dtype=str, sep=None, engine='python')
             except Exception: continue
-            
+
             if df is None or df.empty: continue
-            
+
             header_idx = -1
             if is_sa_file or is_du_file:
                 for r in range(min(15, len(df))):
@@ -268,93 +256,83 @@ def load_excel_csv_data(data_folder_str: str) -> List[Dict]:
                         code_col = col
                         break
             if code_col is None: continue
-            
+
             desc_col = None
             for col in df.columns:
                 c = col.lower().strip()
                 if 'aprašymas' in c or 'description' in c:
                     desc_col = col
                     break
-            
+
             for _, row in df.iterrows():
                 val = row[code_col]
                 if pd.isna(val): continue
                 raw_text = str(val).strip()
-                
-                # GRIEŽTAS FILTRAS
                 if not is_valid_code_cell(raw_text): continue
-                
+
                 clean = re.sub(r'^\s*ex\s*', '', raw_text, flags=re.IGNORECASE)
                 clean = clean.replace('.', '').replace(' ', '').replace('\u00A0', '')
                 if not clean.isdigit(): continue
                 if len(clean) == 8 and clean[4:6] == '00': clean = clean[:4]
                 if len(clean) not in [2, 4, 6, 8, 10]: continue
-                
+
                 extra = ""
                 if desc_col and not pd.isna(row[desc_col]):
                     extra = str(row[desc_col]).strip().replace('\n', ' ')
-                
-                category = "Dvejopo naudojimo prekės (Dual Use)" if is_du_file else "VII Appendix A"
+
                 all_codes.append({
-                    "code": clean, "category": category,
-                    "source": file_path.name, "extra_info": extra, "context": f"{clean} | {extra}"
+                    "code": clean,
+                    "category": file_category, # Naudojame teisingą kategoriją
+                    "source": file_path.name,
+                    "extra_info": extra,
+                    "context": f"{clean} | {extra}"
                 })
         except Exception: continue
     return all_codes
 
 @st.cache_data
 def load_pdf_data() -> Tuple[List[Dict], int]:
-    """
-    ROBUST PDF LOADER.
-    """
     data_folder = Path(DATA_FOLDER)
     if not data_folder.exists(): return [], 0
     all_codes = []
     pdf_files = list(data_folder.glob("*.pdf"))
-    
+
     for pdf_file in pdf_files:
         try:
             if "(master)" in pdf_file.name.lower(): continue
             category = categorize_file(pdf_file.name)
             source = pdf_file.name
-            
+
             with pdfplumber.open(pdf_file) as pdf:
                 for page in pdf.pages:
                     tables = page.extract_tables()
                     extracted_from_table = False
-                    
+
                     if tables:
                         for table in tables:
                             code_idx, desc_idx, start_row = identify_table_columns_universal(table, is_docx=False)
-                            
+
                             for row in table[start_row:]:
                                 if not row or len(row) <= code_idx: continue
-                                
                                 raw_code = str(row[code_idx]).strip() if row[code_idx] else ""
-                                
-                                # GRIEŽTAS FILTRAS - IGNORUOJA APRAŠYMUS KODŲ STULPELYJE
                                 if not is_valid_code_cell(raw_code): continue
-                                
+
                                 found_codes = extract_codes_from_text(raw_code)
                                 for code in found_codes:
                                     desc = ""
                                     if desc_idx != -1 and len(row) > desc_idx and row[desc_idx]:
                                         desc = str(row[desc_idx]).replace('\n', ' ')
-                                    
+
                                     all_codes.append({
                                         "code": code, "category": category, "source": source,
                                         "extra_info": desc, "context": f"{code} | {desc}"
                                     })
                                     extracted_from_table = True
-                    
-                    # FALLBACK: Jei puslapyje NĖRA lentelių, bandome skaityti tekstą.
-                    # Bet jei lentelė buvo (net jei tuščia), teksto neliečiame, kad išvengtume šiukšlių.
+
                     if not extracted_from_table and not tables:
                         text = page.extract_text()
                         if text:
-                            # Čia irgi taikome validaciją, kad iš teksto neimtų ilgų eilučių
                             candidates = extract_codes_from_text(text)
-                            # Papildomai galima filtruoti, bet extract_codes_from_text jau turi logiką
                             for c in candidates:
                                 all_codes.append({
                                     "code": c, "category": category, "source": source,
@@ -368,7 +346,7 @@ def load_taric_master_codes(data_folder_str: str) -> set:
     valid_taric_codes = set()
     data_folder = Path(data_folder_str)
     all_files = list(data_folder.glob("*.xlsx")) + list(data_folder.glob("*.csv"))
-    
+
     for file_path in all_files:
         if "(master)" not in file_path.name.lower(): continue
         try:
@@ -501,7 +479,7 @@ def extract_codes_smart(uploaded_file) -> List[str]:
             df = pd.read_csv(uploaded_file, header=None, dtype=str)
         else:
             try: df = pd.read_excel(uploaded_file, header=None, dtype=str, engine='openpyxl')
-            except: 
+            except:
                 uploaded_file.seek(0)
                 df = pd.read_csv(uploaded_file, header=None, dtype=str)
     except: return []
@@ -545,7 +523,7 @@ def main():
     with st.spinner("Loading files..."):
         all_codes, file_count = load_all_data()
         valid_taric_codes = load_taric_master_codes(DATA_FOLDER)
-    
+
     # --- SIDEBAR ---
     with st.sidebar:
         st.header("Duomenų šaltiniai")
@@ -578,15 +556,15 @@ def main():
             if debug_text:
                 res = extract_codes_from_text(debug_text)
                 st.write(res)
-    
+
     # --- MAIN CONTENT ---
     extracted_codes = []
-    
+
     st.subheader("✍️ Rankinė kodų paieška")
     user_input = st.text_area("📋 Įklijuokite kodus:", height=150)
     if user_input:
         extracted_codes.extend(extract_codes_from_text(user_input))
-    
+
     st.markdown("---")
 
     st.subheader("📂 Arba įkelkite failą")
@@ -600,33 +578,33 @@ def main():
 
     if st.button("Tikrinti", type="primary", use_container_width=True):
         extracted_codes = list(set(extracted_codes))
-        
+
         if not extracted_codes:
             st.warning("Nėra kodų patikrai.")
             return
 
         code_list_str = ", ".join(extracted_codes)
         st.info(f"📊 Tikrinami {len(extracted_codes)} kodai: {code_list_str}")
-        
+
         invalid_codes = []
         sanctioned_items = []
         safe_items = []
-        
+
         for code in extracted_codes:
             if not validate_taric_code(code, valid_taric_codes):
                 invalid_codes.append(code)
                 continue
-            
+
             matches = search_codes(code, all_codes)
             if matches:
                 sanctioned_items.append({"code": code, "matches": matches})
             else:
                 safe_items.append(code)
-        
+
         if invalid_codes:
             st.subheader(f"⚠️ Neatpažinti TARIC kodai ({len(invalid_codes)})")
             for c in invalid_codes: st.error(f"{c} - Nėra TARIC bazėje")
-            
+
         if sanctioned_items:
             st.subheader(f"🔴 Rastos sankcijos ({len(sanctioned_items)})")
             for item in sanctioned_items:
@@ -635,7 +613,7 @@ def main():
                 with st.expander(f"🔴 {code} — {tags}"):
                     df = pd.DataFrame(item["matches"])
                     st.dataframe(df[["category", "source", "extra_info"]], hide_index=True)
-                    
+
         if safe_items:
             st.subheader(f"✅ Švarūs kodai ({len(safe_items)})")
             st.success(", ".join(safe_items))
